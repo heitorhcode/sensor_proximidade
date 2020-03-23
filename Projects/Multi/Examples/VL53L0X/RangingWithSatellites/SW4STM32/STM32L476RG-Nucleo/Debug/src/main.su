@@ -1,0 +1,16 @@
+main.c:172:6:MX_TIM5_Init	48	static
+main.c:197:6:TimeStamp_Init	8	static
+main.c:201:6:TimeStamp_Reset	8	static
+main.c:206:10:TimeStamp_Get	4	static
+main.c:237:5:BSP_GetPushButton	16	static
+main.c:253:5:PusbButton_WaitUnPress	16	static
+main.c:288:6:HandleError	32	static
+main.c:301:5:DetectSensors	40	static
+main.c:392:6:SetupSingleShot	56	static
+main.c:503:6:RangeToLetter	24	static
+main.c:524:6:Sensor_SetNewRange	16	static
+main.c:545:5:RangeDemo	64	static
+main.c:768:6:ResetAndDetectSensor	24	static
+main.c:779:5:main	24	static
+main.c:953:6:SystemClock_Config	240	static
+main.c:1009:6:MX_GPIO_Init	48	static
