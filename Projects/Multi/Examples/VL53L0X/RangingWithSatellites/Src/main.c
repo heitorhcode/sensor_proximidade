@@ -35,6 +35,7 @@
 
 /* USER CODE BEGIN Includes */
 #include <string.h>
+#include <stdlib.h>
 #include "X-NUCLEO-53L0A1.h"
 #include "vl53l0x_api.h"
 #include <limits.h>
@@ -58,7 +59,7 @@
  * @defgroup Configuration Static configuration
  * @{
  */
-#define HAVE_ALARM_DEMO 0
+
 
 /** Time the initial 53L0 message is shown at power up */
 #define WelcomeTime 660
@@ -71,6 +72,8 @@
  */
 #define PressBPSwicthTime   1000
 
+//Distancia dos vãos
+#define DistVaos 1100
 /** @}  */ /* config group */
 
 #ifndef MIN
@@ -105,10 +108,6 @@
 
 const char TxtRangeValue[]  = "rng";
 const char TxtBarGraph[]    = "bar";
-#if HAVE_ALARM_DEMO
-const char TxtAlarm[]       = "Alr";
-#endif
-
 
 typedef enum {
 	LONG_RANGE 		= 0, /*!< Long range mode */
@@ -127,9 +126,10 @@ char *DemoModeTxt[2] = {"rng", "bar"};
 /**
  * Global ranging struct
  */
+//Estrutura de Dados do sensor
 VL53L0X_RangingMeasurementData_t RangingMeasurementData;
-
-
+//Distancia Padrao
+int distPadrao = 50;
 /** leaky factor for filtered range
  *
  * r(n) = averaged_r(n-1)*leaky +r(n)(1-leaky)
@@ -217,19 +217,14 @@ static void MX_GPIO_Init(void);
 /* Private function prototypes -----------------------------------------------*/
 void ResetAndDetectSensor(int SetDisplay);
 
+//usado para calcular a media da distancia que aciona a saida
+void ArmazDistMedia();
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
 
 #define debug_printf    trace_printf
 char WelcomeMsg[]="Ola sou o detector VL53L0X com mcu " MCU_NAME ".\n";
-
-#if HAVE_ALARM_DEMO
-volatile int IntrCount;
-volatile int LastIntrPin;
-volatile int LastIntrId;
-volatile int IntrCounts[3];
-#endif
 
 #define BSP_BP_PORT GPIOC
 #define BSP_BP_PIN  GPIO_PIN_13
@@ -261,23 +256,6 @@ int PusbButton_WaitUnPress(void){
     return  HAL_GetTick() - TimeStarted>PressBPSwicthTime;
 
 }
-
-#if HAVE_ALARM_DEMO
-/**
- * Interrupt handler called each time an interrupt is produced by the ranging sensor (in ALARM mode)
- * @param err
- */
-void VL53L0A1_EXTI_Callback(int DevNo, int GPIO_Pin){
-    IntrCount++;
-    LastIntrPin=GPIO_Pin;
-    LastIntrId=DevNo;
-
-    if( DevNo< ARRAY_SIZE(IntrCounts)  ){
-        IntrCounts[DevNo]++;
-    }
-}
-#endif
-
 
 /**
  * Handle Error
@@ -328,21 +306,21 @@ int DetectSensors(int SetDisplay) {
         	/* Try to read one register using default 0x52 address */
             status = VL53L0X_RdWord(pDev, VL53L0X_REG_IDENTIFICATION_MODEL_ID, &Id);
             if (status) {
-                debug_printf("----A Leitura do sensor #%d  falhou\n", i);
+                debug_printf("----A Leitura do sensor #%d  falhou.\n", i);
                 break;
             }
             if (Id == 0xEEAA) {
 				/* Sensor is found => Change its I2C address to final one */
                 status = VL53L0X_SetDeviceAddress(pDev,FinalAddress);
                 if (status != 0) {
-                    debug_printf("#i VL53L0X_SetDeviceAddress fail\n", i);
+                    debug_printf("#i VL53L0X_Configuracao de endereco do dispositivo falhou.\n", i);
                     break;
                 }
                 pDev->I2cDevAddr = FinalAddress;
                 /* Check all is OK with the new I2C address and initialize the sensor */
                 status = VL53L0X_RdWord(pDev, VL53L0X_REG_IDENTIFICATION_MODEL_ID, &Id);
                 if (status != 0) {
-					debug_printf("#i VL53L0X_RdWord fail\n", i);
+					debug_printf("#i VL53L0X_leitura de palavras falhou.\n", i);
 					break;
 				}
 
@@ -351,17 +329,17 @@ int DetectSensors(int SetDisplay) {
                     pDev->Present = 1;
                 }
                 else{
-                    debug_printf("VL53L0X_DataInit %d fail\n", i);
+                    debug_printf("VL53L0X_Inicializacao de dados %d fail\n", i);
                     break;
                 }
 //                trace_printf("VL53L0X %d Present and initiated to final 0x%x\n", pDev->Id, pDev->I2cDevAddr);
-                trace_printf("VL53L0X %d Existente e inicializado para o final 0x%x .\n", pDev->Id, pDev->I2cDevAddr);
+                trace_printf("VL53L0X #%d Existente e inicializado para o final 0x%x .\n", pDev->Id, pDev->I2cDevAddr);
                 nDevPresent++;
                 nDevMask |= 1 << i;
                 pDev->Present = 1;
             }
             else {
-                debug_printf("#%d unknown ID %x\n", i, Id);
+                debug_printf("#%d desconhecido ID %x\n", i, Id);
                 status = 1;
             }
         } while (0);
@@ -536,6 +514,7 @@ void Sensor_SetNewRange(VL53L0X_Dev_t *pDev, VL53L0X_RangingMeasurementData_t *p
     }
 }
 
+
 /**
  * Implement the ranging demo with all modes managed through the blue button (short and long press)
  * This function implements a while loop until the blue button is pressed
@@ -602,23 +581,24 @@ int RangeDemo(int UseSensorsMask, RangingConfig_e rangingConfig){
             	HAL_Delay(2);
             	Sensor_SetNewRange(&VL53L0XDevs[SingleSensorNo],&RangingMeasurementData);
                 /* Display distance in cm */
-            	if( RangingMeasurementData.RangeStatus == 0 ){
+            	if( RangingMeasurementData.RangeStatus == 0 && RangingMeasurementData.RangeMilliMeter < DistVaos ){
             		trace_printf("Sensor #%d com %useg ligado e distancia do alvo de %dcm com desvio de %dcps.\n", VL53L0XDevs[SingleSensorNo].Id, TimeStamp_Get()/1000000, RangingMeasurementData.RangeMilliMeter/10, RangingMeasurementData.SignalRateRtnMegaCps/1000);
             		sprintf(StrDisplay, "%3dc",(int)VL53L0XDevs[SingleSensorNo].LeakyRange/10);
-
-                    if((RangingMeasurementData.RangeMilliMeter/10) < 50){
+            		//tempConf determina o tamanho do array
+            		ArmazDistMedia();
+                    if((RangingMeasurementData.RangeMilliMeter/10) < distPadrao){
                     	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
                     	trace_printf("Acesso no momento %us!\n",TimeStamp_Get()/1000000);
 
-                    }
-                    else {
+                    }else {
                     	HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
                     }
                 }
 
                 else{
+                	//aconteceu isso	*pPalRangeStatus = 2;  /* Signal Fail */
                     sprintf(StrDisplay, "----");
-//                    StrDisplay[0]=VL53L0XDevs[SingleSensorNo].DevLetter;
+                    StrDisplay[0]=VL53L0XDevs[SingleSensorNo].DevLetter;
                     trace_printf("sensor fora de alcance.\n");
                     HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
                 }
@@ -639,131 +619,33 @@ int RangeDemo(int UseSensorsMask, RangingConfig_e rangingConfig){
     return status;
 }
 
-#if HAVE_ALARM_DEMO
-struct AlrmMode_t {
-    const int VL53L0X_Mode;
-    const char *Name;
-    uint32_t ThreshLow;
-    uint32_t ThreshHigh;
-};
+int n;
+int *v;
+int i, e, m;
+void ArmazDistMedia(){
+	if(TimeStamp_Get()/1000000 < 31){
 
-struct AlrmMode_t AlarmModes[]={
-        { .VL53L0X_Mode = VL53L0X_GPIOFUNCTIONALITY_THRESHOLD_CROSSED_LOW , .Name="Lo" , .ThreshLow=300<<16 ,  .ThreshHigh=0<<16  },
-        { .VL53L0X_Mode = VL53L0X_GPIOFUNCTIONALITY_THRESHOLD_CROSSED_HIGH, .Name= "hi", .ThreshLow=0<<16   ,  .ThreshHigh=300<<16},
-        { .VL53L0X_Mode = VL53L0X_GPIOFUNCTIONALITY_THRESHOLD_CROSSED_OUT , .Name="out", .ThreshLow=300<<16 ,  .ThreshHigh=400<<16},
-};
-
-VL53L0X_Error WaitStopCompleted(VL53L0X_DEV Dev) {
-    VL53L0X_Error Status = VL53L0X_ERROR_NONE;
-    uint32_t StopCompleted=0;
-    uint32_t LoopNb;
-
-    // Wait until it finished
-    // use timeout to avoid deadlock
-    if (Status == VL53L0X_ERROR_NONE) {
-        LoopNb = 0;
-        do {
-            Status = VL53L0X_GetStopCompletedStatus(Dev, &StopCompleted);
-            if ((StopCompleted == 0x00) || Status != VL53L0X_ERROR_NONE) {
-                break;
-            }
-            LoopNb = LoopNb + 1;
-            VL53L0X_PollingDelay(Dev);
-        } while (LoopNb < VL53L0X_DEFAULT_MAX_LOOP);
-
-        if (LoopNb >= VL53L0X_DEFAULT_MAX_LOOP) {
-            Status = VL53L0X_ERROR_TIME_OUT;
+        n = RangingMeasurementData.RangeMilliMeter/10;
+        v = (int *)malloc(n *sizeof(int));
+        if (i < n  ){
+        	v[i]=i;
+        	trace_printf("%d  %d\n", v[i]+1, n);
+        	++i;
         }
+        e = n + e;
+    	m = e/i;
+    	if (m > 225){
+    		m = 225;
+    	}
+    	trace_printf("media %d, total %d, quantidade %d \n", m,e,i);
+	}
+	else{
 
-    }
-
-    return Status;
+	free(v);
+	distPadrao = m;
+	}
 }
 
-
-void AlarmDemo(void){
-    VL53L0X_Dev_t *pDev;
-    uint8_t VhvSettings;
-    uint8_t PhaseCal;
-    uint32_t refSpadCount;
-	uint8_t isApertureSpads;
-	VL53L0X_RangingMeasurementData_t RangingMeasurementData;
-    int status;
-    int Over=0;
-    int Mode=0;
-    char StrDisplay[5]="----";
-
-    /* Only center device is used */
-    pDev=&VL53L0XDevs[1];
-
-
-    /* configure BSP/MCU center sensor interrupt */
-    VL53L0A1_EXTI_IOConfigure(XNUCLEO53L0A1_DEV_CENTER, 0, 0);
-    XNUCLEO53L0A1_SetIntrStateId(1, XNUCLEO53L0A1_DEV_CENTER);
-
-    /* Initialize the device in continuous ranging mode */
-	VL53L0X_StaticInit(pDev);
-	VL53L0X_PerformRefCalibration(pDev, &VhvSettings, &PhaseCal);
-	VL53L0X_PerformRefSpadManagement(pDev, &refSpadCount, &isApertureSpads);
-	VL53L0X_SetInterMeasurementPeriodMilliSeconds(pDev, 250);
-	VL53L0X_SetDeviceMode(pDev, VL53L0X_DEVICEMODE_CONTINUOUS_RANGING);
-
-    do{
-       /* set sensor interrupt mode */
-       VL53L0X_StopMeasurement(pDev);           // it is safer to do this while sensor is stopped
-       VL53L0X_SetInterruptThresholds(pDev, VL53L0X_DEVICEMODE_CONTINUOUS_RANGING ,  AlarmModes[Mode].ThreshLow ,  AlarmModes[Mode].ThreshHigh);
-       status = VL53L0X_SetGpioConfig(pDev, 0, VL53L0X_DEVICEMODE_CONTINUOUS_RANGING, AlarmModes[Mode].VL53L0X_Mode, VL53L0X_INTERRUPTPOLARITY_HIGH);
-       status = VL53L0X_ClearInterruptMask(pDev, -1); // clear interrupt pending if any
-
-       /* Start continuous ranging */
-       VL53L0X_StartMeasurement(pDev);
-       IntrCounts[1]=0;
-
-       /* Check for interrupt */
-       do{
-           __WFI();
-           /* Interrupt received */
-           if( IntrCounts[1] !=0 ){
-        	   /* Reset interrupt counter */
-               IntrCounts[1]=0;
-               /* Get ranging data and display distance*/
-               VL53L0X_GetRangingMeasurementData(pDev, &RangingMeasurementData);
-               sprintf(StrDisplay, "%3dc",(int)RangingMeasurementData.RangeMilliMeter/10);
-               /* Clear interrupt */
-               status = VL53L0X_ClearInterruptMask(pDev, -1);
-               /* keep display for at least 100ms otherwise user may never see it on display*/
-               XNUCLEO53L0A1_SetDisplayString(StrDisplay);
-               HAL_Delay(100);
-           }
-           else{
-        	   /* No interrupt received => Display alarm mode */
-               XNUCLEO53L0A1_SetDisplayString(AlarmModes[Mode].Name);
-           }
-           /* Check blue button */
-           if( !BSP_GetPushButton() ){
-               break;
-           }
-       }while(1);
-       /* Wait button to be released to decide if it is a short or long press */
-       status=PusbButton_WaitUnPress();
-       /* Long press => stop this demo */
-       if( status )
-           Over =1;
-       /* Short press => change alarm mode */
-       Mode=(Mode+1)%ARRAY_SIZE(AlarmModes);
-    }while( !Over );
-
-    /* Stop continuous ranging */
-    VL53L0X_StopMeasurement(pDev);
-
-    /* Ensure device is ready for other commands */
-    WaitStopCompleted(pDev);
-
-    /* Disable configuration of BSP/MCU center sensor interrupt */
-    XNUCLEO53L0A1_SetIntrStateId(0, XNUCLEO53L0A1_DEV_CENTER);
-    VL53L0A1_EXTI_IOUnconfigure(XNUCLEO53L0A1_DEV_CENTER);
-}
-#endif
 
 void ResetAndDetectSensor(int SetDisplay){
     int nSensor;
@@ -807,7 +689,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   XNUCLEO53L0A1_Init();
   uart_printf(WelcomeMsg);
-  XNUCLEO53L0A1_SetDisplayString("LOCO");
+  XNUCLEO53L0A1_SetDisplayString("conf");
 //  XNUCLEO53L0A1_SetDisplayString("53L0");
   HAL_Delay(WelcomeTime);
   ResetAndDetectSensor(1);
@@ -839,12 +721,6 @@ int main(void)
 //      /* Reset Timestamping */
       TimeStamp_Reset();
 //
-#if HAVE_ALARM_DEMO
-//      XNUCLEO53L0A1_SetDisplayString(TxtAlarm);
-//      HAL_Delay(ModeChangeDispTime);
-//      ResetAndDetectSensor(0);
-//      AlarmDemo();
-#else
 
       /* Start Ranging demo */
       ExitWithLongPress = RangeDemo(UseSensorsMask, RangingConfig);
@@ -861,15 +737,8 @@ int main(void)
     	  /* Short press : change ranging config */
     	  RangingConfig = (RangingConfig == LONG_RANGE) ? HIGH_SPEED : ((RangingConfig == HIGH_SPEED) ? HIGH_ACCURACY : LONG_RANGE);
       }
-#endif
   /* USER CODE BEGIN 3 */
-//	  HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
 
-
-//      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
-//      HAL_Delay(250);
-//      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
-//      HAL_Delay(250);
   }
   /* USER CODE END 3 */
 
